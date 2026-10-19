@@ -44,6 +44,18 @@ export interface Task {
   development_checklist: ChecklistItem[]
   created_at: string; updated_at: string
 }
+export interface Requirement {
+  id: number; project_id: number; title: string; description: string
+  acceptance_criteria: string; priority: 'low' | 'medium' | 'high'
+  status: 'active' | 'archived'; task_ids: number[]
+  created_at: string; updated_at: string
+}
+export type RequirementInput = Pick<Requirement, 'title' | 'description' | 'acceptance_criteria' | 'priority' | 'status'>
+export interface RequirementMatchSuggestion {
+  summary: string
+  recommendations: { task_id: number; reason: string }[]
+  context_signature: string
+}
 export interface CodeMetadata {
   kind: 'pull' | 'commit'; title: string; author: string
   state: string; sha: string; number: number | null; checked_at: string

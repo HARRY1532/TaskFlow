@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select
 
-from .api import admin, analytics, assignments, auth, dependencies, invitations, planning, profile, progress, project_activities, projects, reviews, skills, tasks, weights
+from .api import admin, analytics, assignments, auth, dependencies, invitations, planning, profile, progress, project_activities, projects, requirements, reviews, skills, tasks, weights
 from .db import Base, SessionLocal, engine, migrate_sqlite_project_columns, migrate_sqlite_task_columns, migrate_sqlite_user_columns
 from .models import Project, ProjectActivity
 from .security import jwt_secret
@@ -45,6 +45,7 @@ app.add_middleware(
 app.include_router(auth.router, prefix="/api")
 app.include_router(projects.router, prefix="/api")
 app.include_router(tasks.router, prefix="/api")
+app.include_router(requirements.router, prefix="/api")
 app.include_router(invitations.router, prefix="/api")
 app.include_router(profile.router, prefix="/api")
 app.include_router(skills.router, prefix="/api")

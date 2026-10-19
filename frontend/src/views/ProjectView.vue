@@ -7,9 +7,10 @@ import { taskApi } from '../api/task'
 import { skillsApi } from '../api/skills'
 import { weightsApi } from '../api/weights'
 import { dependenciesApi } from '../api/dependencies'
+import { requirementsApi } from '../api/requirements'
 import { useAuthStore } from '../stores/auth'
 import { formatBeijingTime } from '../utils/date'
-import type { ChecklistItem, Invitation, Member, MemberSkillProfile, Project, SkillCategory, Task, TaskDependencies, TaskEvent, TaskReviewAdvice, TaskReviewSnapshot, TaskStatus, TaskWeight, WeightFactors, WeightSuggestion } from '../types'
+import type { ChecklistItem, Invitation, Member, MemberSkillProfile, Project, Requirement, SkillCategory, Task, TaskDependencies, TaskEvent, TaskReviewAdvice, TaskReviewSnapshot, TaskStatus, TaskWeight, WeightFactors, WeightSuggestion } from '../types'
 
 const route = useRoute()
 const router = useRouter()
@@ -20,6 +21,7 @@ const members = ref<Member[]>([])
 const memberSkills = ref<MemberSkillProfile[]>([])
 const invitations = ref<Invitation[]>([])
 const tasks = ref<Task[]>([])
+const requirements = ref<Requirement[]>([])
 const weights = ref<TaskWeight[]>([])
 const dependencies = ref<TaskDependencies[]>([])
 const dependencyDialog = ref(false)
@@ -78,6 +80,7 @@ const tasksFor = (status: TaskStatus) => tasks.value.filter(t => t.status === st
 const weightFor = (taskId: number) => weights.value.find(weight => weight.task_id === taskId)
 const dependsOn = (taskId: number) => dependencies.value.find(item => item.task_id === taskId)?.depends_on_ids || []
 const taskTitle = (taskId: number) => tasks.value.find(item => item.id === taskId)?.title || '已删除任务'
+const requirementsFor = (taskId: number) => requirements.value.filter(item => item.task_ids.includes(taskId))
 function openDependencies(task: Task) {
   dependencyTask.value = task
   selectedDependencies.value = [...dependsOn(task.id)]
@@ -145,8 +148,8 @@ async function confirmWeight() {
 async function load() {
   try {
     const id = projectId.value
-    ;[project.value, members.value, tasks.value, weights.value, dependencies.value] = await Promise.all([
-      projectApi.get(id), projectApi.members(id), taskApi.list(id), weightsApi.list(id), dependenciesApi.list(id),
+    ;[project.value, members.value, tasks.value, weights.value, dependencies.value, requirements.value] = await Promise.all([
+      projectApi.get(id), projectApi.members(id), taskApi.list(id), weightsApi.list(id), dependenciesApi.list(id), requirementsApi.list(id),
     ])
     invitations.value = isOwner.value ? await projectApi.invitations(id) : []
     memberSkills.value = isOwner.value ? await skillsApi.project(id) : []
@@ -440,6 +443,7 @@ onMounted(load)
         <el-button @click="inviteDialog = true">邀请成员</el-button>
         <el-button :disabled="!members.some(member => member.user.id !== auth.user?.id && member.user.is_active)" @click="openTransfer">转让项目负责人</el-button>
         <el-button type="primary" @click="openCreateTask">新建任务</el-button>
+        <router-link :to="`/projects/${projectId}/requirements`"><el-button>项目需求</el-button></router-link>
         <router-link :to="`/projects/${projectId}/planning`"><el-button>AI 任务拆解</el-button></router-link>
         <router-link :to="`/projects/${projectId}/assignments`"><el-button>AI 智能分工</el-button></router-link>
         <router-link :to="`/projects/${projectId}/progress`"><el-button>进度诊断</el-button></router-link>
@@ -447,6 +451,7 @@ onMounted(load)
         <el-button type="danger" plain @click="deleteProject">删除项目</el-button>
       </div>
       <div v-else>
+        <router-link :to="`/projects/${projectId}/requirements`"><el-button>项目需求</el-button></router-link>
         <router-link :to="`/projects/${projectId}/analytics`"><el-button>数据分析</el-button></router-link>
         <el-button type="danger" plain @click="leaveProject">退出项目</el-button>
       </div>
@@ -499,6 +504,7 @@ onMounted(load)
           <p v-if="task.estimated_hours">预计工时：{{ task.estimated_hours }} 小时</p>
           <p v-if="task.required_skills.length">所需技能：{{ task.required_skills.join('、') }}</p>
           <p v-if="dependsOn(task.id).length">依赖任务：{{ dependsOn(task.id).map(taskTitle).join('、') }}</p>
+          <p v-if="requirementsFor(task.id).length">关联需求：{{ requirementsFor(task.id).map(item => item.title).join('、') }}</p>
           <p v-if="task.evidence_note">成果：{{ task.evidence_note }}</p>
           <p v-if="task.evidence_url"><a :href="task.evidence_url" target="_blank" rel="noopener noreferrer">查看成果链接</a></p>
           <p v-if="task.code_url"><a :href="task.code_url" target="_blank" rel="noopener noreferrer">查看代码或 PR</a></p>

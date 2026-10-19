@@ -20,6 +20,7 @@ const router = createRouter({
     { path: '/register', component: RegisterView, meta: { public: true } },
     { path: '/projects', component: DashboardView },
     { path: '/projects/:id', component: ProjectView },
+    { path: '/projects/:id/requirements', component: () => import('../views/RequirementsView.vue') },
     { path: '/projects/:id/planning', component: PlanningView },
     { path: '/projects/:id/assignments', component: AssignmentView },
     { path: '/projects/:id/progress', component: ProgressView },

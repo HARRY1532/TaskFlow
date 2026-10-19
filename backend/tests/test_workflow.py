@@ -17,15 +17,16 @@ from sqlalchemy.pool import StaticPool
 from app.db import Base, get_db
 from app import db as db_module
 from app.main import app
-from app.models import Project, Task, TaskEvent, TaskWeight, User
+from app.models import Project, Requirement, RequirementTask, Task, TaskEvent, TaskWeight, User
 from app.api import planning as planning_api
 from app.api import assignments as assignments_api
 from app.api import progress as progress_api
 from app.api import tasks as tasks_api
 from app.api import reviews as reviews_api
+from app.api import requirements as requirements_api
 from app import github as github_module
 from app.analysis.secret_rules import secret_warnings
-from app.schemas import ReviewAdvice, ReviewFinding
+from app.schemas import RequirementMatchSuggestion, ReviewAdvice, ReviewFinding
 from app.agent.planning import RawPlan, generate_plan
 from app.agent.assignment import RawAssignmentPlan, generate_assignment_suggestion
 from app.agent.diagnosis import RawProgressDiagnosis, generate_progress_diagnosis
@@ -65,6 +66,119 @@ def register_and_login(client: TestClient, email: str):
     })
     assert token.status_code == 200
     return registration.json()["id"], {"Authorization": f"Bearer {token.json()['access_token']}"}
+
+
+def test_requirements_link_tasks_with_project_scope_and_owner_permissions(client: TestClient):
+    _, owner = register_and_login(client, "req-owner@example.com")
+    _, member = register_and_login(client, "req-member@example.com")
+    _, outsider = register_and_login(client, "req-outsider@example.com")
+    project_id = client.post("/api/projects", headers=owner, json={"name": "需求追踪"}).json()["id"]
+    other_project_id = client.post("/api/projects", headers=outsider, json={"name": "其他项目"}).json()["id"]
+    invitation = client.post(f"/api/projects/{project_id}/invitations", headers=owner,
+                             json={"email": "req-member@example.com"}).json()
+    assert client.post(f"/api/invitations/{invitation['id']}/accept", headers=member).status_code == 200
+    task_id = client.post(f"/api/projects/{project_id}/tasks", headers=owner,
+                          json={"title": "实现登录"}).json()["id"]
+    foreign_task_id = client.post(f"/api/projects/{other_project_id}/tasks", headers=outsider,
+                                  json={"title": "外部任务"}).json()["id"]
+    base = f"/api/projects/{project_id}/requirements"
+    payload = {"title": "  用户登录  ", "description": "用户可登录", "acceptance_criteria": "错误密码被拒绝"}
+    assert client.post(base, headers=owner, json={**payload, "title": "  "}).status_code == 422
+    assert client.post(base, headers=member, json=payload).status_code == 403
+    requirement = client.post(base, headers=owner, json=payload)
+    assert requirement.status_code == 201
+    requirement_id = requirement.json()["id"]
+    assert requirement.json()["title"] == "用户登录"
+    path = f"{base}/{requirement_id}"
+    assert client.get(base, headers=member).json()[0]["task_ids"] == []
+    assert client.get(base, headers=outsider).status_code == 404
+    assert client.put(f"{path}/tasks", headers=member, json={"task_ids": [task_id]}).status_code == 403
+    assert client.put(f"{path}/tasks", headers=owner,
+                      json={"task_ids": [foreign_task_id]}).status_code == 422
+    assert client.put(f"{path}/tasks", headers=owner,
+                      json={"task_ids": [task_id, task_id]}).status_code == 422
+    linked = client.put(f"{path}/tasks", headers=owner, json={"task_ids": [task_id]})
+    assert linked.status_code == 200
+    assert linked.json()["task_ids"] == [task_id]
+    assert client.put(path, headers=owner, json={**payload, "status": "archived"}).json()["task_ids"] == [task_id]
+    assert client.delete(path, headers=member).status_code == 403
+    assert client.delete(path, headers=owner).status_code == 204
+    assert client.get(base, headers=owner).json() == []
+    assert client.get(f"/api/projects/{project_id}/tasks", headers=owner).json()[0]["id"] == task_id
+
+
+def test_requirement_links_cleanup_when_task_or_project_is_deleted(client: TestClient):
+    _, owner = register_and_login(client, "cleanup-owner@example.com")
+    project_id = client.post("/api/projects", headers=owner, json={"name": "关联清理"}).json()["id"]
+    task_path = f"/api/projects/{project_id}/tasks"
+    requirement_path = f"/api/projects/{project_id}/requirements"
+    task_id = client.post(task_path, headers=owner, json={"title": "实现功能"}).json()["id"]
+    requirement_id = client.post(requirement_path, headers=owner, json={"title": "功能需求"}).json()["id"]
+    link_path = f"{requirement_path}/{requirement_id}/tasks"
+    assert client.put(link_path, headers=owner, json={"task_ids": [task_id]}).status_code == 200
+    assert client.delete(f"{task_path}/{task_id}", headers=owner).status_code == 204
+    assert client.get(requirement_path, headers=owner).json()[0]["task_ids"] == []
+    next_task_id = client.post(task_path, headers=owner, json={"title": "重新实现"}).json()["id"]
+    assert client.put(link_path, headers=owner, json={"task_ids": [next_task_id]}).status_code == 200
+    assert client.delete(f"/api/projects/{project_id}", headers=owner,
+                         params={"confirmation": "关联清理"}).status_code == 204
+    with Session(client.app.state.test_engine) as db:
+        assert db.query(Requirement).count() == 0
+        assert db.query(RequirementTask).count() == 0
+
+
+def test_ai_requirement_task_recommendation_needs_owner_review_and_fresh_data(client: TestClient, monkeypatch):
+    _, owner = register_and_login(client, "match-owner@example.com")
+    _, member = register_and_login(client, "match-member@example.com")
+    _, outsider = register_and_login(client, "match-outsider@example.com")
+    project_id = client.post("/api/projects", headers=owner, json={"name": "推荐关联"}).json()["id"]
+    invitation = client.post(f"/api/projects/{project_id}/invitations", headers=owner,
+                             json={"email": "match-member@example.com"}).json()
+    client.post(f"/api/invitations/{invitation['id']}/accept", headers=member)
+    task_path = f"/api/projects/{project_id}/tasks"
+    task_id = client.post(task_path, headers=owner, json={
+        "title": "登录接口", "description": "实现密码验证", "acceptance_criteria": "错误密码被拒绝",
+    }).json()["id"]
+    requirement_path = f"/api/projects/{project_id}/requirements"
+    requirement_id = client.post(requirement_path, headers=owner, json={
+        "title": "用户登录", "acceptance_criteria": "错误密码被拒绝",
+    }).json()["id"]
+    path = f"{requirement_path}/{requirement_id}"
+
+    async def fake_recommend(context):
+        assert context["requirement"]["title"] == "用户登录"
+        assert context["candidate_tasks"][0]["id"] == task_id
+        assert "updated_at" not in context["candidate_tasks"][0]
+        return RequirementMatchSuggestion(summary="登录接口与需求直接相关", recommendations=[
+            {"task_id": task_id, "reason": "实现密码验证并覆盖错误密码验收标准"},
+        ])
+
+    monkeypatch.setattr(requirements_api, "recommend_tasks", fake_recommend)
+    assert client.post(f"{path}/recommendations", headers=member).status_code == 403
+    assert client.post(f"{path}/recommendations", headers=outsider).status_code == 404
+    result = client.post(f"{path}/recommendations", headers=owner)
+    assert result.status_code == 200
+    signature = result.json()["context_signature"]
+    assert result.json()["recommendations"][0]["task_id"] == task_id
+    assert client.get(requirement_path, headers=owner).json()[0]["task_ids"] == []
+    client.patch(f"{task_path}/{task_id}", headers=owner, json={"description": "调整密码验证方式"})
+    assert client.put(f"{path}/tasks", headers=owner, json={
+        "task_ids": [task_id], "expected_signature": signature,
+    }).status_code == 409
+    refreshed = client.post(f"{path}/recommendations", headers=owner).json()
+    assert client.put(f"{path}/tasks", headers=owner, json={
+        "task_ids": [task_id], "expected_signature": refreshed["context_signature"],
+    }).status_code == 200
+
+    async def invalid_recommend(context):
+        return RequirementMatchSuggestion(summary="错误任务", recommendations=[
+            {"task_id": 999999, "reason": "不存在"},
+        ])
+
+    monkeypatch.setattr(requirements_api, "recommend_tasks", invalid_recommend)
+    other_task = client.post(task_path, headers=owner, json={"title": "新增候选任务"}).json()
+    assert other_task["id"] != task_id
+    assert client.post(f"{path}/recommendations", headers=owner).status_code == 502
 
 
 def test_development_checklist_and_structured_evidence(client: TestClient, monkeypatch):

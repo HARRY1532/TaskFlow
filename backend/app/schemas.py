@@ -263,6 +263,51 @@ class TaskOut(ORMModel):
     updated_at: datetime
 
 
+class RequirementIn(BaseModel):
+    title: str = Field(min_length=1, max_length=160)
+    description: str = Field(default="", max_length=5000)
+    acceptance_criteria: str = Field(default="", max_length=3000)
+    priority: Literal["low", "medium", "high"] = "medium"
+    status: Literal["active", "archived"] = "active"
+
+    @field_validator("title")
+    @classmethod
+    def validate_title(cls, value: str) -> str:
+        return meaningful(value)
+
+
+class RequirementLinksIn(BaseModel):
+    task_ids: list[int] = Field(max_length=100)
+    expected_signature: str | None = Field(default=None, pattern="^[0-9a-f]{64}$")
+
+
+class RequirementTaskRecommendation(BaseModel):
+    task_id: int
+    reason: str = Field(min_length=1, max_length=500)
+
+
+class RequirementMatchSuggestion(BaseModel):
+    summary: str = Field(max_length=1000)
+    recommendations: list[RequirementTaskRecommendation] = Field(max_length=10)
+
+
+class RequirementMatchOut(RequirementMatchSuggestion):
+    context_signature: str
+
+
+class RequirementOut(ORMModel):
+    id: int
+    project_id: int
+    title: str
+    description: str
+    acceptance_criteria: str
+    priority: Literal["low", "medium", "high"]
+    status: Literal["active", "archived"]
+    task_ids: list[int]
+    created_at: datetime
+    updated_at: datetime
+
+
 class WeightFactors(ORMModel):
     complexity: int = Field(ge=1, le=5)
     estimated_hours: int = Field(ge=1, le=80)
